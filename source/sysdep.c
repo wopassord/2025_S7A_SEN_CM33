@@ -125,6 +125,11 @@ void uart_init(USART_Type *base, uint32_t baudrate)
 	config.enableTx     = true;
 	config.enableRx     = true;
 
+////////////////////HABILITADOS PARA QUE FUNCIONE wait_test_key() ///////
+    config.txWatermark = false;   // Habilitar FIFO de transmisión
+    config.rxWatermark = false;   // Habilitar FIFO de recepción
+////////////////////HABILITADOS PARA QUE FUNCIONE wait_test_key() ///////
+
 	USART_Init(base, &config, CLOCK_GetFlexCommClkFreq(0U));
 
 	/* Enable RX interrupt. */
@@ -254,7 +259,7 @@ int sys_test_key (void)
 *****/
 {
 	if (USART0->FIFOSTAT & USART_FIFOSTAT_RXNOTEMPTY_MASK) {
-		USART_ReadByte(USART0);
+		char c = USART_ReadByte(USART0);
 		return escape;
 	}
 	return 0;
@@ -336,20 +341,26 @@ void page_down_cb()
 }
 /***************** clock and wait ********************/
 volatile uint32_t sys_tick_cnt=0;
+volatile uint32_t sys_tick_cnt_limit = (1U << 23);
 
 /* sys_tick timer IRQ Handler
  *    limit sys_tick_cnt to 23 bits
  */
 void SysTick_Handler(void)
 {
-
+	if (sys_tick_cnt >= sys_tick_cnt_limit){
+		sys_tick_cnt = 0;
+	}
+	else{
+		sys_tick_cnt += 1 ;
+	}
 }
 
 real sys_clock (void)
 /***** define a timer in seconds.
 ******/
 {
-	return 0.0;
+	return (real)sys_tick_cnt;
 }
 
 void sys_wait (real time, scan_t *scan)
@@ -357,12 +368,29 @@ void sys_wait (real time, scan_t *scan)
 Return the scan code or 0 (time exceeded).
 ******/
 {
-	if (user_break) {		// a key was pressed, so stop and quit
-		char c;
-		c=uart_getc(USART0); *scan=escape;
-		return;
+
+	if(time > 0){
+		real start_time = sys_clock() - 1 ;
+		while(1){
+		if ((sys_clock() - start_time) < time){
+			if(user_break == 1){
+				return;
+			}
+		}
+		else if ((sys_clock() - start_time) > time) {
+			return;
+		}
+		}
+	}
+	if(time < 0){
+		printf("Press a key...\n");
+		char c = sys_wait_key(scan);
+		if (*scan == escape) {		// a key was pressed, so stop and quit
+			return;
+		}
 	}
 }
+
 
 /*******************************************************************************
  * FILE INPUT/OUTPUT ROUTINES (SDCARD)
@@ -1768,10 +1796,14 @@ Initialize memory and call main_loop
 	ginit(&gw);
 
 	// Codec init
+
 	pcm_init();
 	
 	// Set systick reload value to generate 1ms interrupt
-//    SysTick_Config(SystemCoreClock A COMPLETER);
+	// Si hay 12 millones en un segundo, cuántos habrán en 1 ms? 12 000.
+	// Mandás esa cantidad y entonces el SysTick tendrá interrupciones cada ms. :)
+	uint32_t ticks = SystemCoreClock / 1000;
+    SysTick_Config(ticks);
 
 #ifdef MULTICORE_APP
     core1_startup( /* A COMPLETER */ );
